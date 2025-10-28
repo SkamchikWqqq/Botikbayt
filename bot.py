@@ -46,8 +46,8 @@ def generate_keyboard():
     kb = types.InlineKeyboardMarkup()
     for ch in channels:
         kb.add(types.InlineKeyboardButton(
-            f"📢 Проверить канал: {ch['name']}",
-            callback_data="noop"
+            f"📢 Подписаться на {ch['name']}",
+            url=ch["invite"]
         ))
     kb.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check"))
     return kb
@@ -65,7 +65,7 @@ def start(message):
 
     text = "📢 Для использования бота необходимо подписаться на каналы:\n\n"
     for ch in channels:
-        text += f"• {ch['name']} (ID: {ch['id']})\n"
+        text += f"• {ch['name']}\n"
 
     text += "\nПосле подписки нажмите кнопку «✅ Я подписался»"
 
@@ -76,15 +76,10 @@ def start(message):
 def check(call):
     if check_subscription(call.from_user.id):
         bot.answer_callback_query(call.id, "✅ Подписка подтверждена")
-        bot.send_message(call.from_user.id, "🔥 Добро пожаловать! Подписка подтверждена.")
+        bot.send_message(call.from_user.id, "🔥 Дождитесь ответа поддержки.")
     else:
         bot.answer_callback_query(call.id, "❌ Нет подписки на все каналы")
         bot.send_message(call.from_user.id, "❌ Подпишитесь на все каналы!", reply_markup=generate_keyboard())
-
-
-@bot.callback_query_handler(func=lambda c: c.data == "noop")
-def noop_callback(call):
-    bot.answer_callback_query(call.id, "Это закрытый канал — подпишись вручную.")
 
 
 # ================== АДМИН ПАНЕЛЬ ==================
@@ -109,7 +104,7 @@ def list_ch(message):
     else:
         text = "📌 Каналы:\n"
         for ch in channels:
-            text += f"{ch['name']} — {ch['id']}\n"
+            text += f"{ch['name']} — {ch['id']}\nСсылка: {ch['invite']}\n\n"
         bot.send_message(message.chat.id, text)
 
 
@@ -117,7 +112,8 @@ def list_ch(message):
 def add_start(message):
     if message.from_user.id != ADMIN_ID:
         return
-    bot.send_message(message.chat.id, "📨 Отправьте ID канала (например, -1002415070098):")
+    bot.send_message(message.chat.id,
+                     "📨 Отправьте данные в формате:\n\n<code>-1002415070098:https://t.me/+dCdAT_n80sBhODQ0</code>\n\n(Айди канала и ссылка через двоеточие)")
     bot.register_next_step_handler(message, add_channel)
 
 
@@ -125,7 +121,15 @@ def add_channel(message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    ch_id = message.text.strip()
+    text = message.text.strip()
+    if ":" not in text:
+        bot.send_message(message.chat.id, "❌ Неверный формат! Используй пример:\n<code>-1002415070098:https://t.me/+dCdAT_n80sBhODQ0</code>")
+        return
+
+    ch_id, link = text.split(":", 1)
+    ch_id = ch_id.strip()
+    link = link.strip()
+
     try:
         chat = bot.get_chat(int(ch_id))
         ch_name = chat.title or "Без названия"
@@ -136,11 +140,11 @@ def add_channel(message):
                 bot.send_message(message.chat.id, "⚠️ Этот канал уже есть!")
                 return
 
-        channels.append({"id": ch_id, "name": ch_name, "invite": "Закрытый канал"})
+        channels.append({"id": ch_id, "name": ch_name, "invite": link})
         save_channels(channels)
 
         bot.send_message(message.chat.id,
-                         f"✅ Добавлено:\n📌 {ch_name}\n🆔 {ch_id}")
+                         f"✅ Добавлено:\n📌 {ch_name}\n🆔 {ch_id}\n🔗 {link}")
     except Exception as e:
         bot.send_message(message.chat.id,
                          f"❌ Ошибка! Проверь, что бот — админ канала!\n\n{e}")
@@ -186,4 +190,4 @@ def index():
 
 if __name__ == "__main__":
     server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-        
+              
