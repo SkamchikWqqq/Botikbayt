@@ -13,6 +13,8 @@ server = Flask(__name__)
 CHANNELS_FILE = "channels.json"
 
 
+# ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
+
 def load_channels():
     if not os.path.exists(CHANNELS_FILE):
         with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
@@ -30,10 +32,11 @@ def check_subscription(user_id):
     channels = load_channels()
     for ch in channels:
         try:
-            info = bot.get_chat_member(ch["id"], user_id)
+            info = bot.get_chat_member(int(ch["id"]), user_id)
             if info.status not in ["member", "creator", "administrator"]:
                 return False
-        except:
+        except Exception as e:
+            print(f"Ошибка проверки {ch['id']}: {e}")
             return False
     return True
 
@@ -43,20 +46,26 @@ def generate_keyboard():
     kb = types.InlineKeyboardMarkup()
     for ch in channels:
         kb.add(types.InlineKeyboardButton(
-            f"📢 Подписаться на {ch['name']}",
-            url=ch['invite']
+            f"📢 Проверить канал: {ch['name']}",
+            callback_data="noop"
         ))
     kb.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check"))
     return kb
 
 
+# ================== СТАРТ / ПРОВЕРКА ==================
+
 @bot.message_handler(commands=["start"])
 def start(message):
     channels = load_channels()
 
-    text = "📢 Для использования бота необходимо подписаться на наши каналы:\n\n"
+    if not channels:
+        bot.send_message(message.chat.id, "⚙️ Каналы пока не добавлены админом.")
+        return
+
+    text = "📢 Для использования бота необходимо подписаться на каналы:\n\n"
     for ch in channels:
-        text += f"• {ch['name']}\n"
+        text += f"• {ch['name']} (ID: {ch['id']})\n"
 
     text += "\nПосле подписки нажмите кнопку «✅ Я подписался»"
 
@@ -67,13 +76,18 @@ def start(message):
 def check(call):
     if check_subscription(call.from_user.id):
         bot.answer_callback_query(call.id, "✅ Подписка подтверждена")
-        bot.send_message(call.from_user.id, "🔥 Дождитесь ответа поддержки.")
+        bot.send_message(call.from_user.id, "🔥 Добро пожаловать! Подписка подтверждена.")
     else:
-        bot.answer_callback_query(call.id, "❌ Нет подписки на 1+ каналов")
+        bot.answer_callback_query(call.id, "❌ Нет подписки на все каналы")
         bot.send_message(call.from_user.id, "❌ Подпишитесь на все каналы!", reply_markup=generate_keyboard())
 
 
-# ================= ADMIN PANEL ================= #
+@bot.callback_query_handler(func=lambda c: c.data == "noop")
+def noop_callback(call):
+    bot.answer_callback_query(call.id, "Это закрытый канал — подпишись вручную.")
+
+
+# ================== АДМИН ПАНЕЛЬ ==================
 
 @bot.message_handler(commands=["admin"])
 def admin(message):
@@ -103,7 +117,7 @@ def list_ch(message):
 def add_start(message):
     if message.from_user.id != ADMIN_ID:
         return
-    bot.send_message(message.chat.id, "📨 Отправьте invite-ссылку канала:")
+    bot.send_message(message.chat.id, "📨 Отправьте ID канала (например, -1002415070098):")
     bot.register_next_step_handler(message, add_channel)
 
 
@@ -111,26 +125,25 @@ def add_channel(message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    invite = message.text.strip()
+    ch_id = message.text.strip()
     try:
-        chat = bot.get_chat(invite)
-        ch_id = chat.id
-        ch_name = chat.title or chat.username or "Канал"
+        chat = bot.get_chat(int(ch_id))
+        ch_name = chat.title or "Без названия"
 
         channels = load_channels()
         for c in channels:
-            if c["id"] == ch_id:
+            if str(c["id"]) == ch_id:
                 bot.send_message(message.chat.id, "⚠️ Этот канал уже есть!")
                 return
 
-        channels.append({"id": ch_id, "name": ch_name, "invite": invite})
+        channels.append({"id": ch_id, "name": ch_name, "invite": "Закрытый канал"})
         save_channels(channels)
 
         bot.send_message(message.chat.id,
                          f"✅ Добавлено:\n📌 {ch_name}\n🆔 {ch_id}")
-    except:
+    except Exception as e:
         bot.send_message(message.chat.id,
-                         "❌ Ошибка! Приглашение неверное или бот не админ!")
+                         f"❌ Ошибка! Проверь, что бот — админ канала!\n\n{e}")
 
 
 @bot.message_handler(func=lambda m: m.text == "➖ Удалить канал")
@@ -156,7 +169,7 @@ def remove_channel(message):
         bot.send_message(message.chat.id, "❌ Канала с таким ID нет!")
 
 
-# ============ WEBHOOK (Render) ============ #
+# ================== WEBHOOK (Render / Flask) ==================
 
 @server.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -173,3 +186,4 @@ def index():
 
 if __name__ == "__main__":
     server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+        
