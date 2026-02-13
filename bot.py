@@ -1,193 +1,161 @@
-import telebot
-import json
 import os
-from telebot import types
-from flask import Flask, request
+from flask import Flask
+from threading import Thread
 
-TOKEN = "7917190360:AAFxfFYsEsx9kQiPbh7MtZ6N7HLZcSPQRNs"
-ADMIN_ID = 130231824
+app = Flask('')
 
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
-server = Flask(__name__)
+@app.route('/')
+def home():
+    return "✅ Я онлайн!"
 
-CHANNELS_FILE = "channels.json"
+def run():
+    port = int(os.environ.get("PORT", 8080))  # Получаем порт из переменной окружения
+    app.run(host='0.0.0.0', port=port)  # Запускаем Flask на этом порту
 
+Thread(target=run).start()
+import asyncio
 
-# ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
+import aiosqlite
 
-def load_channels():
-    if not os.path.exists(CHANNELS_FILE):
-        with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
-            json.dump([], f, ensure_ascii=False, indent=4)
-    with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+from aiogram import Bot, Dispatcher, types, F
 
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 
-def save_channels(channels):
-    with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
-        json.dump(channels, f, ensure_ascii=False, indent=4)
+from aiogram.filters import CommandStart
 
+from aiogram.fsm.state import State, StatesGroup
 
-def check_subscription(user_id):
-    channels = load_channels()
-    for ch in channels:
+from aiogram.fsm.context import FSMContext
+
+# Изначальный список обязательных каналов
+required_channels = [
+    "@channel1",  # замените на свои каналы (открытые)
+    "-1001234567890"  # замените на ID закрытого канала (например, для закрытого канала)
+]
+
+# Список администраторов
+admins = ['cunpar', 'Ytrautr']
+
+# Функция для проверки, является ли пользователь администратором
+def is_admin(update: Update) -> bool:
+    user_username = update.message.from_user.username
+    return user_username in admins
+
+# Функция для отображения кнопок
+def show_channels(update: Update, context: CallbackContext) -> None:
+    if not is_admin(update):
+        update.message.reply_text("❌ У вас нет прав для использования этой команды.")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("Добавить канал", callback_data='add_channel')],
+        [InlineKeyboardButton("Удалить канал", callback_data='remove_channel')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text("Выберите действие с каналами:", reply_markup=reply_markup)
+
+# Функция для добавления канала
+def add_channel(update: Update, context: CallbackContext) -> None:
+    if not is_admin(update):
+        update.message.reply_text("❌ У вас нет прав для использования этой команды.")
+        return
+    update.message.reply_text("Введите юзернейм канала для добавления (например, @example_channel) или ID для закрытого канала:")
+
+# Функция для удаления канала
+def remove_channel(update: Update, context: CallbackContext) -> None:
+    if not is_admin(update):
+        update.message.reply_text("❌ У вас нет прав для использования этой команды.")
+        return
+    update.message.reply_text("Введите юзернейм канала для удаления (например, @example_channel) или ID для закрытого канала:")
+
+# Функция обработки введенного текста
+def handle_text(update: Update, context: CallbackContext) -> None:
+    if not is_admin(update):
+        update.message.reply_text("❌ У вас нет прав для использования этой команды.")
+        return
+
+    user_input = update.message.text.strip()
+
+    # Если пользователь хочет добавить канал
+    if user_input.startswith('@') and update.message.text.startswith('@'):
+        if user_input not in required_channels:
+            required_channels.append(user_input)
+            update.message.reply_text(f"Канал {user_input} добавлен в список обязательных.")
+        else:
+            update.message.reply_text(f"Канал {user_input} уже в списке обязательных.")
+    
+    # Если пользователь хочет добавить закрытый канал через ID
+    elif user_input.startswith('-100'):
+        if user_input not in required_channels:
+            required_channels.append(user_input)
+            update.message.reply_text(f"Закрытый канал с ID {user_input} добавлен в список обязательных.")
+        else:
+            update.message.reply_text(f"Закрытый канал с ID {user_input} уже в списке обязательных.")
+
+    # Если пользователь хочет удалить канал
+    elif user_input.startswith('@') or user_input.startswith('-100'):
+        if user_input in required_channels:
+            required_channels.remove(user_input)
+            update.message.reply_text(f"Канал {user_input} удалён из списка обязательных.")
+        else:
+            update.message.reply_text(f"Канал {user_input} не найден в списке обязательных.")
+    else:
+        update.message.reply_text("Введите правильный юзернейм канала или ID канала, начиная с @ для открытых каналов и -100 для закрытых.")
+
+# Функция проверки подписки
+def check_subscription(update: Update, context: CallbackContext) -> bool:
+    user_id = update.message.from_user.id
+    for channel in required_channels:
         try:
-            info = bot.get_chat_member(int(ch["id"]), user_id)
-            if info.status not in ["member", "creator", "administrator"]:
-                return False
-        except Exception as e:
-            print(f"Ошибка проверки {ch['id']}: {e}")
-            return False
+            # Если канал открыт, используем get_chat_member
+            if channel.startswith('@'):
+                member = context.bot.get_chat_member(channel, user_id)
+                if member.status not in ['member', 'administrator']:
+                    return False
+            # Если канал закрыт (ID), используем get_chat_member с ID
+            elif channel.startswith('-100'):
+                member = context.bot.get_chat_member(channel, user_id)
+                if member.status not in ['member', 'administrator']:
+                    return False
+        except BadRequest:
+            return False  # В случае ошибки (например, если канал не найден)
     return True
 
-
-def generate_keyboard():
-    channels = load_channels()
-    kb = types.InlineKeyboardMarkup()
-    for ch in channels:
-        kb.add(types.InlineKeyboardButton(
-            f"📢 Подписаться на {ch['name']}",
-            url=ch["invite"]
-        ))
-    kb.add(types.InlineKeyboardButton("✅ Я подписался", callback_data="check"))
-    return kb
-
-
-# ================== СТАРТ / ПРОВЕРКА ==================
-
-@bot.message_handler(commands=["start"])
-def start(message):
-    channels = load_channels()
-
-    if not channels:
-        bot.send_message(message.chat.id, "⚙️ Каналы пока не добавлены админом.")
-        return
-
-    text = "📢 Для использования бота необходимо подписаться на каналы:\n\n"
-    for ch in channels:
-        text += f"• {ch['name']}\n"
-
-    text += "\nПосле подписки нажмите кнопку «✅ Я подписался»"
-
-    bot.send_message(message.chat.id, text, reply_markup=generate_keyboard())
-
-
-@bot.callback_query_handler(func=lambda c: c.data == "check")
-def check(call):
-    if check_subscription(call.from_user.id):
-        bot.answer_callback_query(call.id, "✅ Подписка подтверждена")
-        bot.send_message(call.from_user.id, "🔥 Дождитесь ответа поддержки.")
+# Функция старта бота
+def start(update: Update, context: CallbackContext) -> None:
+    if check_subscription(update, context):
+        update.message.reply_text("✅ Вы подписаны на все каналы, добро пожаловать!")
     else:
-        bot.answer_callback_query(call.id, "❌ Нет подписки на все каналы")
-        bot.send_message(call.from_user.id, "❌ Подпишитесь на все каналы!", reply_markup=generate_keyboard())
+        update.message.reply_text("❌ Вам нужно подписаться на обязательные каналы, чтобы продолжить.")
+        for channel in required_channels:
+            update.message.reply_text(f"Подпишитесь на канал: {channel}")
+    
+    # Показываем кнопки добавления/удаления канала
+    show_channels(update, context)
 
+# Основной код запуска бота
+def main():
+    # Вставь сюда свой токен
+    updater = Updater("8219425121:AAG5FZ3kIHE8XSVnjwthbkxYdXX-QDnFWYk", use_context=True)  # Вставь свой токен
 
-# ================== АДМИН ПАНЕЛЬ ==================
+    # Получаем диспетчера для добавления обработчиков
+    dp = updater.dispatcher
 
-@bot.message_handler(commands=["admin"])
-def admin(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("➕ Добавить канал", "➖ Удалить канал")
-    kb.add("📋 Посмотреть каналы")
-    bot.send_message(message.chat.id, "🔐 Админ панель", reply_markup=kb)
+    # Обработчик команды /start
+    dp.add_handler(CommandHandler("start", start))
 
+    # Обработчик текстовых сообщений
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
 
-@bot.message_handler(func=lambda m: m.text == "📋 Посмотреть каналы")
-def list_ch(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    channels = load_channels()
-    if not channels:
-        bot.send_message(message.chat.id, "❌ Нет каналов")
-    else:
-        text = "📌 Каналы:\n"
-        for ch in channels:
-            text += f"{ch['name']} — {ch['id']}\nСсылка: {ch['invite']}\n\n"
-        bot.send_message(message.chat.id, text)
+    # Обработчик inline кнопок (для добавления/удаления канала)
+    dp.add_handler(CallbackQueryHandler(add_channel, pattern='add_channel'))
+    dp.add_handler(CallbackQueryHandler(remove_channel, pattern='remove_channel'))
 
+    # Запускаем бота
+    updater.start_polling()
 
-@bot.message_handler(func=lambda m: m.text == "➕ Добавить канал")
-def add_start(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    bot.send_message(message.chat.id,
-                     "📨 Отправьте данные в формате:\n\n<code>-1002415070098:https://t.me/+dCdAT_n80sBhODQ0</code>\n\n(Айди канала и ссылка через двоеточие)")
-    bot.register_next_step_handler(message, add_channel)
+    # Ожидаем завершения работы
+    updater.idle()
 
-
-def add_channel(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    text = message.text.strip()
-    if ":" not in text:
-        bot.send_message(message.chat.id, "❌ Неверный формат! Используй пример:\n<code>-1002415070098:https://t.me/+dCdAT_n80sBhODQ0</code>")
-        return
-
-    ch_id, link = text.split(":", 1)
-    ch_id = ch_id.strip()
-    link = link.strip()
-
-    try:
-        chat = bot.get_chat(int(ch_id))
-        ch_name = chat.title or "Без названия"
-
-        channels = load_channels()
-        for c in channels:
-            if str(c["id"]) == ch_id:
-                bot.send_message(message.chat.id, "⚠️ Этот канал уже есть!")
-                return
-
-        channels.append({"id": ch_id, "name": ch_name, "invite": link})
-        save_channels(channels)
-
-        bot.send_message(message.chat.id,
-                         f"✅ Добавлено:\n📌 {ch_name}\n🆔 {ch_id}\n🔗 {link}")
-    except Exception as e:
-        bot.send_message(message.chat.id,
-                         f"❌ Ошибка! Проверь, что бот — админ канала!\n\n{e}")
-
-
-@bot.message_handler(func=lambda m: m.text == "➖ Удалить канал")
-def remove_start(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    bot.send_message(message.chat.id, "🔻 Введите ID удаляемого канала:")
-    bot.register_next_step_handler(message, remove_channel)
-
-
-def remove_channel(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    ch_id = message.text.strip()
-    channels = load_channels()
-    updated = [c for c in channels if str(c["id"]) != ch_id]
-
-    if len(updated) != len(channels):
-        save_channels(updated)
-        bot.send_message(message.chat.id, "🗑 Канал удалён!")
-    else:
-        bot.send_message(message.chat.id, "❌ Канала с таким ID нет!")
-
-
-# ================== WEBHOOK (Render / Flask) ==================
-
-@server.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    bot.process_new_updates([telebot.types.Update.de_json(request.get_json())])
-    return "OK", 200
-
-
-@server.route("/", methods=["GET"])
-def index():
-    bot.remove_webhook()
-    bot.set_webhook(url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}")
-    return "Webhook set", 200
-
-
-if __name__ == "__main__":
-    server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-              
+if __name__ == '__main__':
+    main()
